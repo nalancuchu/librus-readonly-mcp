@@ -155,14 +155,46 @@ export function containsAttachmentId(value, attachmentId) {
   return visit(value);
 }
 
-export function publicChild(child) {
+export function publicChild(child, classPayload = null) {
+  const schoolClass = classPayload?.Class ?? classPayload?.class ?? classPayload;
   return {
     id: child.id,
     login: child.login,
     student_name: child.studentName,
     account_identifier: child.accountIdentifier,
     group: child.group,
+    class_id: classValue(schoolClass, ["Id", "id", "Identifier", "identifier"]) ?? child.group ?? null,
+    class_name: className(schoolClass),
     state: child.state,
     scopes: child.scopes ?? [],
   };
+}
+
+function className(schoolClass) {
+  if (!schoolClass || typeof schoolClass !== "object" || Array.isArray(schoolClass)) return null;
+  const explicit = classValue(schoolClass, ["Name", "name", "ClassName", "className", "FullName", "fullName"]);
+  if (explicit !== null) return String(explicit);
+
+  const number = classValue(schoolClass, ["Number", "number"]);
+  const symbol = classValue(schoolClass, ["Symbol", "symbol", "ShortName", "shortName"]);
+  if (number !== null && symbol !== null) {
+    const numberText = String(number).trim();
+    const symbolText = String(symbol).trim();
+    return symbolText.toLocaleLowerCase("pl-PL").startsWith(numberText.toLocaleLowerCase("pl-PL"))
+      ? symbolText
+      : `${numberText}${symbolText}`;
+  }
+  if (symbol !== null) return String(symbol);
+  if (number !== null) return String(number);
+  return null;
+}
+
+function classValue(schoolClass, keys) {
+  if (!schoolClass || typeof schoolClass !== "object" || Array.isArray(schoolClass)) return null;
+  for (const key of keys) {
+    const value = schoolClass[key];
+    if (typeof value === "string" && value.trim() !== "") return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
 }

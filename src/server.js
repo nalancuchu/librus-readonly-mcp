@@ -18,8 +18,8 @@ const studentProp = {
 };
 
 const tools = [
-  tool("list_students", "Lista wszystkich dzieci powiązanych z Kontem LIBRUS. Nie zwraca tokenów.", {}),
-  tool("get_student_profile", "Profil jednego dziecka.", studentProp, ["student_id"]),
+  tool("list_students", "Lista wszystkich dzieci powiązanych z Kontem LIBRUS, wraz z identyfikatorem i nazwą klasy. Nie zwraca tokenów.", {}),
+  tool("get_student_profile", "Profil jednego dziecka wraz z identyfikatorem i nazwą klasy.", studentProp, ["student_id"]),
   tool("get_grades", "Oceny dziecka w podanym zakresie dat.", { ...studentProp, ...dateProps }, ["student_id", "date_from", "date_to"]),
   tool("get_attendance", "Frekwencja dziecka w podanym zakresie dat.", { ...studentProp, ...dateProps }, ["student_id", "date_from", "date_to"]),
   tool("get_timetable", "Plan lekcji dziecka; zakres maksymalnie 31 dni, z zastępstwami zwracanymi przez Librus.", { ...studentProp, date_from: dateProps.date_from, date_to: dateProps.date_to }, ["student_id", "date_from", "date_to"]),

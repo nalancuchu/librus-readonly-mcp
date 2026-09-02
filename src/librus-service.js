@@ -33,7 +33,22 @@ export class LibrusReadOnlyService {
 
   async listStudents() {
     const children = await this.session.listChildren();
-    return { students: children.map(publicChild), count: children.length };
+    const students = await Promise.all(children.map(async (child) => {
+      const classPayload = await this.classForChild(child);
+      return publicChild(child, classPayload);
+    }));
+    return { students, count: students.length };
+  }
+
+  async classForChild(child, existingClient = null) {
+    try {
+      const client = existingClient ?? await this.session.forChild(child);
+      if (typeof client.getClass !== "function") return null;
+      return await client.getClass();
+    } catch {
+      // Brak metadanych klasy nie może zablokować pozostałych danych dziecka.
+      return null;
+    }
   }
 
   async resolveStudent(studentId) {
@@ -52,7 +67,11 @@ export class LibrusReadOnlyService {
 
   async getStudentProfile(studentId) {
     const { child, client } = await this.clientFor(studentId);
-    return { student: publicChild(child), profile: await client.getMe() };
+    const [profile, classPayload] = await Promise.all([
+      client.getMe(),
+      this.classForChild(child, client),
+    ]);
+    return { student: publicChild(child, classPayload), profile };
   }
 
   async getGrades(studentId, { dateFrom, dateTo, limit }) {

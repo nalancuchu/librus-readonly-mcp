@@ -25,10 +25,15 @@ function fakeSession(client) {
 }
 
 test("lista wielu dzieci nie ujawnia tokenów", async () => {
-  const service = new LibrusReadOnlyService({ session: fakeSession({}) });
+  const classes = new Map([[11, { Id: 101, Number: 1, Symbol: "A" }], [22, { Id: 202, Name: "2B" }]]);
+  const session = fakeSession({});
+  session.forChild = async (child) => ({ async getClass() { return { Class: classes.get(child.id) }; } });
+  const service = new LibrusReadOnlyService({ session });
   const result = await service.listStudents();
   assert.equal(result.count, 2);
   assert.deepEqual(result.students.map((item) => item.student_name), ["Anna", "Jan"]);
+  assert.deepEqual(result.students.map((item) => item.class_name), ["1A", "2B"]);
+  assert.deepEqual(result.students.map((item) => item.class_id), [101, 202]);
   assert.equal(JSON.stringify(result).includes("token-a"), false);
 });
 

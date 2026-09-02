@@ -24,8 +24,13 @@ test("filterDated przepuszcza rekordy bez daty i filtruje rekordy datowane", () 
 });
 
 test("publicChild usuwa accessToken", () => {
-  const result = publicChild({ id: 1, login: "abc", studentName: "A", accountIdentifier: "x", group: "g", state: "active", accessToken: "tajne" });
+  const result = publicChild(
+    { id: 1, login: "abc", studentName: "A", accountIdentifier: "x", group: "g", state: "active", accessToken: "tajne" },
+    { Class: { Id: 44, Number: 3, Symbol: "C" } },
+  );
   assert.equal("accessToken" in result, false);
+  assert.equal(result.class_id, 44);
+  assert.equal(result.class_name, "3C");
 });
 
 test("sanitizeFilename blokuje traversal", () => {
