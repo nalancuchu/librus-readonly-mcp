@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { LibrusSession } from "librus-sdk";
+import * as v from "valibot";
 
 import {
   clampLimit,
@@ -99,16 +100,30 @@ export class LibrusReadOnlyService {
 
   async getCalendar(studentId, { dateFrom, dateTo, limit }) {
     const { child, client } = await this.clientFor(studentId);
-    const [calendar, classFree, schoolFree] = await Promise.all([
+    const [calendarIndex, classFree, schoolFree] = await Promise.all([
       client.getCalendars(), client.getClassFreeDays(), client.getSchoolFreeDays(),
     ]);
+    const calendarRefs = firstArray(calendarIndex, ["Calendars"]);
+    const calendarPayloads = await Promise.all(calendarRefs.map((reference) => (
+      this.calendarForReference(client, reference)
+    )));
+    const calendarEvents = calendarPayloads.flatMap(calendarEventsFromPayload);
     const events = [
-      ...firstArray(calendar, ["Calendars"]),
+      ...calendarEvents,
       ...firstArray(classFree, ["ClassFreeDays"]),
       ...firstArray(schoolFree, ["SchoolFreeDays"]),
     ];
     const rows = filterDated(events, dateFrom, dateTo).slice(0, limit);
     return { student: publicChild(child), date_from: dateFrom, date_to: dateTo, count: rows.length, events: rows };
+  }
+
+  async calendarForReference(client, reference) {
+    const id = calendarReferenceId(reference);
+    if (typeof client.getCalendar === "function") return client.getCalendar(id);
+    if (typeof client.getJson !== "function") {
+      throw new Error("Klient Librusa nie obsługuje pobierania szczegółów kalendarza.");
+    }
+    return client.getJson(`/Calendars/${encodeURIComponent(String(id))}`, v.looseObject({}));
   }
 
   async getHomework(studentId, { dateFrom, dateTo, limit }) {
@@ -187,6 +202,27 @@ export class LibrusReadOnlyService {
     const { dateFrom, dateTo } = dateRange(args.date_from, args.date_to, maxDays);
     return { dateFrom, dateTo, limit: clampLimit(args.limit, this.maxResults) };
   }
+}
+
+function calendarReferenceId(reference) {
+  if (!reference || typeof reference !== "object" || Array.isArray(reference)) {
+    throw new Error("Librus zwrócił niepoprawny odnośnik do kalendarza.");
+  }
+  const id = reference.Id ?? reference.id;
+  if ((typeof id !== "string" && typeof id !== "number") || String(id).trim() === "") {
+    throw new Error("Odnośnik do kalendarza zwrócony przez Librusa nie zawiera identyfikatora.");
+  }
+  return id;
+}
+
+function calendarEventsFromPayload(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+  for (const key of ["Calendar", "Calendars", "Events", "Entries"]) {
+    if (Array.isArray(payload[key])) return payload[key];
+    if (payload[key] && typeof payload[key] === "object") return [payload[key]];
+  }
+  return [];
 }
 
 function readPositiveInt(name, fallback, min, max) {
