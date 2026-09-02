@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   containsAttachmentId,
+  findAttachment,
   dateRange,
   filterDated,
   publicChild,
@@ -40,4 +41,10 @@ test("sanitizeFilename blokuje traversal", () => {
 test("containsAttachmentId wymaga kontekstu pliku lub załącznika", () => {
   assert.equal(containsAttachmentId({ Attachments: [{ Id: 42 }] }, 42), true);
   assert.equal(containsAttachmentId({ Message: { Id: 42 } }, 42), false);
+});
+
+test("findAttachment zwraca dokładny obiekt załącznika", () => {
+  const attachment = { id: "840702", filename: "plan.pdf" };
+  assert.equal(findAttachment({ Message: { Id: "840702", attachments: [attachment] } }, "840702"), attachment);
+  assert.equal(findAttachment({ Message: { Id: "840702" } }, "840702"), null);
 });

@@ -139,18 +139,27 @@ export function filenameFromDisposition(disposition) {
 }
 
 export function containsAttachmentId(value, attachmentId) {
+  return findAttachment(value, attachmentId) !== null;
+}
+
+export function findAttachment(value, attachmentId) {
   const target = String(attachmentId);
   const seen = new Set();
   function visit(node, key = "", inAttachment = false) {
     const attachmentContext = inAttachment || /attachment|file|zalacz/i.test(key);
-    if (node === null || node === undefined) return false;
-    if (typeof node !== "object") {
-      return attachmentContext && /(^id$|attachment|file|zalacz)/i.test(key) && String(node) === target;
-    }
-    if (seen.has(node)) return false;
+    if (node === null || node === undefined || typeof node !== "object") return null;
+    if (seen.has(node)) return null;
     seen.add(node);
-    if (Array.isArray(node)) return node.some((entry) => visit(entry, key, attachmentContext));
-    return Object.entries(node).some(([childKey, child]) => visit(child, childKey, attachmentContext));
+    if (!Array.isArray(node) && attachmentContext) {
+      const id = node.Id ?? node.id ?? node.AttachmentId ?? node.attachmentId;
+      if (id !== undefined && String(id) === target) return node;
+    }
+    const entries = Array.isArray(node) ? node.map((entry) => [key, entry]) : Object.entries(node);
+    for (const [childKey, child] of entries) {
+      const found = visit(child, childKey, attachmentContext);
+      if (found) return found;
+    }
+    return null;
   }
   return visit(value);
 }

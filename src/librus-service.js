@@ -6,9 +6,9 @@ import * as v from "valibot";
 
 import {
   clampLimit,
-  containsAttachmentId,
   dateRange,
   filenameFromDisposition,
+  findAttachment,
   filterDated,
   firstArray,
   mondayOf,
@@ -189,16 +189,19 @@ export class LibrusReadOnlyService {
     const safeMessageId = requireString(String(messageId), "message_id", 100);
     const safeAttachmentId = requireString(String(attachmentId), "attachment_id", 100);
     const message = await client.getMessage(safeMessageId);
-    if (!containsAttachmentId(message, safeAttachmentId)) {
+    const attachment = findAttachment(message, safeAttachmentId);
+    if (!attachment) {
       throw new Error("Podany załącznik nie należy do wskazanej wiadomości albo Librus nie zwrócił jego identyfikatora.");
     }
 
-    const binary = await client.getMessageAttachment(safeAttachmentId);
+    const binary = await this.getMessageAttachment(client, safeMessageId, safeAttachmentId);
     const data = Buffer.isBuffer(binary.data) ? binary.data : Buffer.from(binary.data);
     if (data.length > this.maxAttachmentBytes) {
       throw new Error(`Załącznik przekracza limit ${this.maxAttachmentBytes} bajtów.`);
     }
-    const original = filenameFromDisposition(binary.contentDisposition) ?? `zalacznik-${safeAttachmentId}.bin`;
+    const original = filenameFromDisposition(binary.contentDisposition)
+      ?? attachmentFilename(attachment)
+      ?? `zalacznik-${safeAttachmentId}.bin`;
     const fileName = `${sanitizeFilename(String(child.id))}-${sanitizeFilename(safeMessageId)}-${sanitizeFilename(original)}`;
     const sha256 = createHash("sha256").update(data).digest("hex");
     const metadata = {
@@ -224,6 +227,44 @@ export class LibrusReadOnlyService {
     };
   }
 
+  async getMessageAttachment(client, messageId, attachmentId) {
+    const backend = client.messageBackend;
+    if (!backend || typeof backend.fetchImpl !== "function" || typeof backend.wiadomosciBaseUrl !== "string") {
+      return client.getMessageAttachment(attachmentId);
+    }
+
+    const endpoint = new URL(
+      `/api/attachments/${encodeURIComponent(attachmentId)}/messages/${encodeURIComponent(messageId)}`,
+      backend.wiadomosciBaseUrl,
+    ).toString();
+    const request = async (retryAfterUnauthorized) => {
+      if (!backend.authenticated && typeof backend.authenticate === "function") await backend.authenticate();
+      const response = await backend.fetchImpl(endpoint, {
+        method: "GET",
+        headers: {
+          accept: "application/octet-stream, */*",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/62.0",
+        },
+      });
+      if (response.status === 401 && retryAfterUnauthorized && typeof backend.authenticate === "function") {
+        await response.arrayBuffer();
+        backend.authenticated = false;
+        await backend.authenticate();
+        return request(false);
+      }
+      if (!response.ok) {
+        await response.arrayBuffer();
+        throw new Error(`Wiadomosci API request failed (HTTP ${response.status}).`);
+      }
+      return {
+        data: await response.arrayBuffer(),
+        contentDisposition: response.headers.get("content-disposition"),
+        contentType: response.headers.get("content-type"),
+      };
+    };
+    return request(true);
+  }
+
   parseRange(args, maxDays = 62) {
     const { dateFrom, dateTo } = dateRange(args.date_from, args.date_to, maxDays);
     return { dateFrom, dateTo, limit: clampLimit(args.limit, this.maxResults) };
@@ -233,6 +274,13 @@ export class LibrusReadOnlyService {
     const { dateFrom, dateTo } = dateRange(args.date_from, args.date_to, 62);
     return { dateFrom, dateTo, limit: clampLimit(args.limit, Math.min(this.maxResults, 100)) };
   }
+}
+
+function attachmentFilename(attachment) {
+  for (const key of ["filename", "FileName", "name", "Name"]) {
+    if (typeof attachment[key] === "string" && attachment[key].trim() !== "") return attachment[key].trim();
+  }
+  return null;
 }
 
 const CALENDAR_COLLECTIONS = {

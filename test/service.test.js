@@ -200,3 +200,75 @@ test("załącznik jest weryfikowany względem wiadomości i zapisywany prywatnie
   assert.equal(await readFile(path.join(attachmentDir, result.filename), "utf8"), "test");
   assert.equal(result.filename.includes(".."), false);
 });
+
+test("załącznik nowego modułu wiadomości używa endpointu z message_id i sesyjnych cookies", async () => {
+  const calls = [];
+  const backend = {
+    authenticated: true,
+    wiadomosciBaseUrl: "https://wiadomosci.librus.pl",
+    async fetchImpl(endpoint, options) {
+      calls.push({ endpoint, options });
+      return new Response(Buffer.from("pdf"), {
+        status: 200,
+        headers: { "content-type": "application/pdf" },
+      });
+    },
+  };
+  const client = {
+    messageBackend: backend,
+    async getMessage() {
+      return { Message: { attachments: [{ id: "840702", filename: "plan.pdf" }] } };
+    },
+    async getMessageAttachment() { throw new Error("stary endpoint nie powinien być użyty"); },
+  };
+  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+  const result = await service.downloadMessageAttachment("22", "39348", "840702");
+
+  assert.equal(calls[0].endpoint, "https://wiadomosci.librus.pl/api/attachments/840702/messages/39348");
+  assert.equal(calls[0].options.method, "GET");
+  assert.equal(result.filename, "22-39348-plan.pdf");
+  assert.equal(result.content_type, "application/pdf");
+  assert.equal(Buffer.from(result.data, "base64").toString(), "pdf");
+});
+
+test("błąd API załącznika nowego modułu jest propagowany bez treści odpowiedzi", async () => {
+  const client = {
+    messageBackend: {
+      authenticated: true,
+      wiadomosciBaseUrl: "https://wiadomosci.librus.pl",
+      async fetchImpl() { return new Response("token=secret", { status: 403 }); },
+    },
+    async getMessage() { return { Message: { attachments: [{ id: "840702" }] } }; },
+  };
+  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+
+  await assert.rejects(service.downloadMessageAttachment("22", "39348", "840702"), /HTTP 403/);
+});
+
+test("mylący attachment_id poza listą załączników jest odrzucany", async () => {
+  const client = {
+    async getMessage() { return { Message: { Id: "840702", attachments: [{ id: "123" }] } }; },
+    async getMessageAttachment() { throw new Error("nie powinno zostać wywołane"); },
+  };
+  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+
+  await assert.rejects(service.downloadMessageAttachment("22", "39348", "840702"), /nie należy/);
+});
+
+test("pobieranie załączników wielu dzieci zachowuje osobne klienty", async () => {
+  const session = fakeSession(null);
+  session.forChildWiadomosci = async (child) => ({
+    async getMessage() { return { Message: { attachments: [{ id: "9", filename: `${child.id}.txt` }] } }; },
+    async getMessageAttachment() { return { data: Buffer.from(String(child.id)), contentType: "text/plain" }; },
+  });
+  const service = new LibrusReadOnlyService({ session, attachmentMode: "inline" });
+  const [anna, jan] = await Promise.all([
+    service.downloadMessageAttachment("11", "8", "9"),
+    service.downloadMessageAttachment("22", "8", "9"),
+  ]);
+
+  assert.equal(Buffer.from(anna.data, "base64").toString(), "11");
+  assert.equal(Buffer.from(jan.data, "base64").toString(), "22");
+  assert.equal(anna.student.id, 11);
+  assert.equal(jan.student.id, 22);
+});
