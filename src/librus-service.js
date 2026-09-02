@@ -24,6 +24,8 @@ export class LibrusReadOnlyService {
     this.maxAttachmentBytes = options.maxAttachmentBytes ?? readPositiveInt(
       "LIBRUS_MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024, 1024, 25 * 1024 * 1024,
     );
+    this.attachmentPollAttempts = options.attachmentPollAttempts ?? 10;
+    this.attachmentPollDelayMs = options.attachmentPollDelayMs ?? 500;
     this.attachmentDir = path.resolve(options.attachmentDir ?? process.env.LIBRUS_ATTACHMENT_DIR ?? "attachments");
     this.attachmentMode = options.attachmentMode ?? process.env.LIBRUS_ATTACHMENT_MODE ?? "file";
     if (!["file", "inline"].includes(this.attachmentMode)) {
@@ -261,13 +263,9 @@ export class LibrusReadOnlyService {
       if (!isJsonContentType(contentType)) return binaryResponse(response, contentType);
 
       const downloadUrl = downloadUrlFromJson(await response.arrayBuffer());
-      const downloadResponse = await backend.fetchImpl(downloadUrl, {
-        method: "GET",
-        headers: {
-          accept: "application/octet-stream, */*",
-          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/62.0",
-        },
-      });
+      await this.waitForAttachmentReady(backend, downloadUrl);
+      const finalUrl = finalAttachmentUrl(downloadUrl);
+      const downloadResponse = await followAttachmentRedirects(backend, finalUrl);
       if (downloadResponse.status === 401 && retryAfterUnauthorized && typeof backend.authenticate === "function") {
         await downloadResponse.arrayBuffer();
         backend.authenticated = false;
@@ -278,9 +276,35 @@ export class LibrusReadOnlyService {
         await downloadResponse.arrayBuffer();
         throw new Error(`Pobieranie pliku z Librusa nie powiodło się (HTTP ${downloadResponse.status}).`);
       }
+      if (downloadResponse.url) safeLibrusUrl(downloadResponse.url);
       return binaryResponse(downloadResponse, downloadResponse.headers.get("content-type"));
     };
     return request(true);
+  }
+
+  async waitForAttachmentReady(backend, downloadUrl) {
+    const sourceUrl = safeLibrusUrl(downloadUrl);
+    const key = sourceUrl.searchParams.get("singleUseKey");
+    if (!key) throw new Error("Odnośnik załącznika nie zawiera klucza jednorazowego.");
+    const checkUrl = new URL("https://sandbox.librus.pl/index.php?action=CSCheckKey");
+    for (let attempt = 1; attempt <= this.attachmentPollAttempts; attempt += 1) {
+      const response = await backend.fetchImpl(checkUrl.toString(), {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/plain, */*",
+          "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/62.0",
+        },
+        body: new URLSearchParams({ singleUseKey: key }).toString(),
+      });
+      if (!response.ok) {
+        await response.arrayBuffer();
+        throw new Error(`Sprawdzenie gotowości pliku w Librusie nie powiodło się (HTTP ${response.status}).`);
+      }
+      if (attachmentIsReady(await response.arrayBuffer())) return;
+      if (attempt < this.attachmentPollAttempts) await wait(this.attachmentPollDelayMs);
+    }
+    throw new Error("Plik załącznika nie był gotowy w wyznaczonym czasie.");
   }
 
   parseRange(args, maxDays = 62) {
@@ -316,16 +340,66 @@ function downloadUrlFromJson(arrayBuffer) {
   if (payload?.data?.status !== "ok" || typeof rawUrl !== "string") {
     throw new Error("Librus nie zwrócił odnośnika do pobrania załącznika.");
   }
+  return safeLibrusUrl(rawUrl.replaceAll("&amp;", "&")).toString();
+}
+
+function safeLibrusUrl(value) {
   let url;
-  try {
-    url = new URL(rawUrl.replaceAll("&amp;", "&"));
-  } catch {
+  try { url = new URL(value); } catch {
     throw new Error("Librus zwrócił niepoprawny odnośnik do pobrania załącznika.");
   }
-  if (url.protocol !== "https:" || (url.hostname !== "librus.pl" && !url.hostname.endsWith(".librus.pl"))) {
+  if (url.protocol !== "https:" || url.port || url.username || url.password
+    || (url.hostname !== "librus.pl" && !url.hostname.endsWith(".librus.pl"))) {
     throw new Error("Librus zwrócił niedozwolony odnośnik do pobrania załącznika.");
   }
+  return url;
+}
+
+function finalAttachmentUrl(downloadUrl) {
+  const url = safeLibrusUrl(downloadUrl);
+  if (url.searchParams.get("action") !== "CSTryToDownload") {
+    throw new Error("Librus zwrócił nieobsługiwany odnośnik do pobrania załącznika.");
+  }
+  url.searchParams.set("action", "CSDownload");
   return url.toString();
+}
+
+function attachmentIsReady(arrayBuffer) {
+  const text = Buffer.from(arrayBuffer).toString("utf8");
+  try {
+    const payload = JSON.parse(text);
+    return payload?.status === "ready" || payload?.data?.status === "ready";
+  } catch {
+    return /\bready\b/i.test(text);
+  }
+}
+
+function attachmentRequestOptions() {
+  return {
+    method: "GET",
+    redirect: "manual",
+    headers: {
+      accept: "application/octet-stream, */*",
+      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/62.0",
+    },
+  };
+}
+
+async function followAttachmentRedirects(backend, initialUrl) {
+  let url = safeLibrusUrl(initialUrl);
+  for (let redirects = 0; redirects <= 5; redirects += 1) {
+    const response = await backend.fetchImpl(url.toString(), attachmentRequestOptions());
+    if (response.status < 300 || response.status >= 400) return response;
+    const location = response.headers.get("location");
+    await response.arrayBuffer();
+    if (!location) throw new Error("Przekierowanie załącznika nie zawiera adresu docelowego.");
+    url = safeLibrusUrl(new URL(location, url).toString());
+  }
+  throw new Error("Librus zwrócił zbyt wiele przekierowań podczas pobierania załącznika.");
+}
+
+function wait(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 async function binaryResponse(response, contentType) {

@@ -216,6 +216,21 @@ test("załącznik nowego modułu wiadomości wykonuje dwuetapowe pobieranie", as
           },
         }), { status: 200, headers: { "content-type": "application/json" } });
       }
+      if (calls.length === 2) {
+        return new Response(JSON.stringify({ status: "pending" }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      if (calls.length === 3) {
+        return new Response(JSON.stringify({ status: "ready" }), {
+          status: 200, headers: { "content-type": "application/json" },
+        });
+      }
+      if (calls.length === 4) {
+        return new Response(null, {
+          status: 302, headers: { location: "https://files.librus.pl/generated/plan.pdf" },
+        });
+      }
       return new Response(Buffer.from("pdf"), {
         status: 200,
         headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="api.pdf"' },
@@ -229,11 +244,18 @@ test("załącznik nowego modułu wiadomości wykonuje dwuetapowe pobieranie", as
     },
     async getMessageAttachment() { throw new Error("stary endpoint nie powinien być użyty"); },
   };
-  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+  const service = new LibrusReadOnlyService({
+    session: fakeSession(client), attachmentMode: "inline", attachmentPollDelayMs: 0,
+  });
   const result = await service.downloadMessageAttachment("22", "39348", "840702");
 
   assert.equal(calls[0].endpoint, "https://wiadomosci.librus.pl/api/attachments/840702/messages/39348");
-  assert.equal(calls[1].endpoint, "https://sandbox.librus.pl/index.php?action=CSTryToDownload&singleUseKey=hidden");
+  assert.equal(calls[1].endpoint, "https://sandbox.librus.pl/index.php?action=CSCheckKey");
+  assert.equal(calls[1].options.method, "POST");
+  assert.equal(calls[2].endpoint, "https://sandbox.librus.pl/index.php?action=CSCheckKey");
+  assert.equal(calls[3].endpoint, "https://sandbox.librus.pl/index.php?action=CSDownload&singleUseKey=hidden");
+  assert.equal(calls[3].options.redirect, "manual");
+  assert.equal(calls[4].endpoint, "https://files.librus.pl/generated/plan.pdf");
   assert.equal(calls[0].options.method, "GET");
   assert.equal(result.filename, "22-39348-plan.pdf");
   assert.equal(result.content_type, "application/pdf");
@@ -250,15 +272,16 @@ test("nazwa z wiadomości jest zachowana, gdy odpowiedź końcowa nie ma content
         requestNo += 1;
         if (requestNo === 1) {
           return new Response(JSON.stringify({ data: {
-            status: "ok", downloadLink: "https://sandbox.librus.pl/download?singleUseKey=hidden",
+            status: "ok", downloadLink: "https://sandbox.librus.pl/index.php?action=CSTryToDownload&singleUseKey=hidden",
           } }), { headers: { "content-type": "application/json; charset=utf-8" } });
         }
+        if (requestNo === 2) return new Response('{"status":"ready"}');
         return new Response(Buffer.from("%PDF-test"), { headers: { "content-type": "application/pdf" } });
       },
     },
     async getMessage() { return { Message: { attachments: [{ id: "840702", filename: "plan.pdf" }] } }; },
   };
-  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline", attachmentPollDelayMs: 0 });
   const result = await service.downloadMessageAttachment("22", "39348", "840702");
 
   assert.equal(result.filename, "22-39348-plan.pdf");
@@ -278,15 +301,16 @@ test("JSON lub HTML jako odpowiedź końcowa nie są zapisywane jako plik", asyn
           requestNo += 1;
           if (requestNo === 1) {
             return new Response(JSON.stringify({ data: {
-              status: "ok", downloadLink: "https://sandbox.librus.pl/download?singleUseKey=hidden",
+              status: "ok", downloadLink: "https://sandbox.librus.pl/index.php?action=CSTryToDownload&singleUseKey=hidden",
             } }), { headers: { "content-type": "application/json" } });
           }
+          if (requestNo === 2) return new Response('{"status":"ready"}');
           return new Response(body, { headers: { "content-type": contentType } });
         },
       },
       async getMessage() { return { Message: { attachments: [{ id: "840702", filename: "plan.pdf" }] } }; },
     };
-    const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+    const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline", attachmentPollDelayMs: 0 });
     await assert.rejects(service.downloadMessageAttachment("22", "39348", "840702"), /nie zwrócił pliku/);
   }
 });
@@ -305,6 +329,27 @@ test("odnośnik pobierania poza HTTPS i domeną Librusa jest odrzucany", async (
     async getMessage() { return { Message: { attachments: [{ id: "840702" }] } }; },
   };
   const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+  await assert.rejects(service.downloadMessageAttachment("22", "39348", "840702"), /niedozwolony/);
+});
+
+test("przekierowanie końcowego pobrania poza domenę Librusa jest odrzucane", async () => {
+  let requestNo = 0;
+  const client = {
+    messageBackend: {
+      authenticated: true,
+      wiadomosciBaseUrl: "https://wiadomosci.librus.pl",
+      async fetchImpl() {
+        requestNo += 1;
+        if (requestNo === 1) return new Response(JSON.stringify({ data: {
+          status: "ok", downloadLink: "https://sandbox.librus.pl/index.php?action=CSTryToDownload&singleUseKey=hidden",
+        } }), { headers: { "content-type": "application/json" } });
+        if (requestNo === 2) return new Response('{"status":"ready"}');
+        return new Response(null, { status: 302, headers: { location: "https://example.com/file.pdf" } });
+      },
+    },
+    async getMessage() { return { Message: { attachments: [{ id: "840702" }] } }; },
+  };
+  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline", attachmentPollDelayMs: 0 });
   await assert.rejects(service.downloadMessageAttachment("22", "39348", "840702"), /niedozwolony/);
 });
 
