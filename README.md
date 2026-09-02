@@ -177,3 +177,48 @@ identyfikator załącznika faktycznie w niej występuje. Pliki:
 To nadal nieoficjalna integracja. Librus może zmienić endpointy lub regulamin.
 Nie konfiguruj agresywnego odpytywania cyklicznego; używaj jej do prywatnego,
 umiarkowanego odczytu własnego konta.
+
+## ChatGPT/Codex na macOS
+
+Najbezpieczniejszym zastosowaniem na osobistym koncie jest lokalny serwer MCP
+`stdio`. Nie wymaga publicznego hostingu, domeny ani tokenu API OpenAI.
+
+1. Zainstaluj Node.js 22 i wykonaj `npm ci` w katalogu projektu.
+2. Zapisz dane Librusa w pęku kluczy:
+
+   ```bash
+   ./scripts/macos-save-credentials.sh
+   ```
+
+3. W aplikacji ChatGPT otwórz **Settings → MCP servers → Add server**.
+4. Wybierz **STDIO** i ustaw:
+
+   ```text
+   Name: librus
+   Command: /bin/zsh
+   Arguments: /ABSOLUTNA/SCIEZKA/librus-readonly-mcp/scripts/macos-keychain-run.sh
+   ```
+
+5. Zapisz, zrestartuj aplikację i wpisz `/mcp` w polu rozmowy.
+
+Skrypt pobiera login i hasło z macOS Keychain dopiero podczas startu. Hasło nie
+trafia do repozytorium ani `~/.codex/config.toml`. Załączniki są zapisywane w
+`~/Documents/LibrusAttachments`; katalog można zmienić zmienną
+`LIBRUS_ATTACHMENT_DIR` w konfiguracji MCP.
+
+Wszystkie narzędzia deklarują adnotacje MCP `readOnlyHint: true` i
+`destructiveHint: false`. Instrukcje serwera nakazują najpierw pobrać listę
+dzieci, jawnie używać właściwego `student_id` i oddzielać wiadomości od
+ogłoszeń.
+
+### Codzienne podsumowania i e-mail
+
+Lokalny MCP działa tylko w środowisku mającym dostęp do tego Maca i jego pęku
+kluczy. Zadanie chmurowe ChatGPT nie powinno zakładać dostępu do lokalnego MCP.
+Niezawodną wysyłkę cykliczną należy zrealizować jako osobny lokalny proces
+uruchamiany przez macOS `launchd` albo jako usługę zdalną.
+
+Proces wysyłający e-mail nie jest częścią MCP i nie powinien być udostępniany
+modelowi jako narzędzie Librusa. Dzięki temu sam connector pozostaje ściśle
+tylko do odczytu, a lista odbiorców, godzina oraz konfiguracja poczty są jawne
+i kontrolowane poza rozmową.

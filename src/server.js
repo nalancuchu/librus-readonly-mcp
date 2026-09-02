@@ -42,13 +42,32 @@ const tools = [
 ];
 
 function tool(name, description, properties, required = []) {
-  return { name, description, inputSchema: { type: "object", additionalProperties: false, properties, required } };
+  return {
+    name,
+    description,
+    inputSchema: { type: "object", additionalProperties: false, properties, required },
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: true,
+    },
+  };
 }
 
 export function createServer(service = new LibrusReadOnlyService()) {
   const server = new Server(
     { name: "librus-readonly-mcp", version: "0.1.0" },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      instructions: [
+        "Prywatny connector LIBRUS tylko do odczytu, obsługujący wiele dzieci.",
+        "Najpierw wywołaj list_students. Dla każdego kolejnego wywołania jawnie przekaż student_id właściwego dziecka; nigdy nie mieszaj danych dzieci.",
+        "Wiadomości i ogłoszenia są osobnymi źródłami. Do treści wiadomości użyj get_message, a do załącznika download_message_attachment.",
+        "Connector nie wysyła wiadomości, nie usprawiedliwia nieobecności i nie zmienia danych.",
+        "Daty względne przelicz na YYYY-MM-DD w strefie Europe/Warsaw przed wywołaniem narzędzia.",
+      ].join(" "),
+    },
   );
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
