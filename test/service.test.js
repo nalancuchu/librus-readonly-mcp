@@ -98,18 +98,70 @@ test("terminarz zwraca pusty wynik, gdy nie ma wpisów ani dni wolnych", async (
   assert.equal(result.count, 0);
 });
 
-test("błąd API podczas rozwijania kalendarza nie jest maskowany", async () => {
+test("częściowy błąd API jest raportowany bez utraty poprawnych wpisów", async () => {
   const client = {
-    async getCalendars() { return { Calendars: [{ Id: 101 }] }; },
-    async getCalendar() { throw new Error("Synergia API request failed"); },
+    async getCalendars() { return { Calendars: [{ Id: 101 }, { Id: 102 }] }; },
+    async getCalendar(id) {
+      if (id === 101) throw new Error("Synergia API request failed with token=secret");
+      return { Calendar: { Id: id, Date: "2026-09-12", Description: "Wycieczka" } };
+    },
     async getClassFreeDays() { return { ClassFreeDays: [] }; },
     async getSchoolFreeDays() { return { SchoolFreeDays: [] }; },
   };
   const service = new LibrusReadOnlyService({ session: fakeSession(client) });
+  const result = await service.getCalendar("11", { dateFrom: "2026-09-01", dateTo: "2026-09-30", limit: 10 });
 
-  await assert.rejects(
-    service.getCalendar("11", { dateFrom: "2026-09-01", dateTo: "2026-09-30", limit: 10 }),
-    /Synergia API request failed/,
+  assert.deepEqual(result.events.map((event) => event.Id), [102]);
+  assert.deepEqual(result.partial_errors, [
+    { source: "calendar", id: 101, error: "Nie udało się pobrać szczegółów wpisu z Librusa." },
+  ]);
+  assert.equal(JSON.stringify(result).includes("secret"), false);
+});
+
+test("terminarz rozwija zagnieżdżone kolekcje i zwraca metadane klasy", async () => {
+  const calls = [];
+  const client = {
+    apiBaseUrl: "https://api.librus.pl/2.0",
+    async getClass() { return { Class: { Id: 66559, Number: 3, Symbol: "Europa" } }; },
+    async getCalendars() { return { Calendars: [{ Id: 66559 }] }; },
+    async getClassFreeDays() { return { ClassFreeDays: [] }; },
+    async getSchoolFreeDays() {
+      return { SchoolFreeDays: [{ Id: 20, Url: "https://api.librus.pl/2.0/Calendars/SchoolFreeDays/20" }] };
+    },
+    async getJson(endpoint) {
+      calls.push(endpoint);
+      if (endpoint === "/Calendars/66559") {
+        return { Calendar: {
+          HomeWorks: [{ Id: 10, Url: "https://api.librus.pl/2.0/HomeWorks/10" }],
+          SchoolFreeDays: [{ Id: 20, Url: "https://api.librus.pl/2.0/Calendars/SchoolFreeDays/20" }],
+          Substitutions: [{ Id: 30 }],
+          ParentTeacherConferences: [{ Id: 40 }],
+        } };
+      }
+      if (String(endpoint).endsWith("/HomeWorks/10")) return { HomeWork: { Id: 10, Date: "2026-09-10", Content: "Praca domowa" } };
+      if (String(endpoint).endsWith("/SchoolFreeDays/20")) return { SchoolFreeDay: { Id: 20, Date: "2026-09-11", Name: "Dzień wolny" } };
+      if (endpoint === "/Calendars/Substitutions/30") return { Substitution: { Id: 30, Date: "2026-09-12" } };
+      if (endpoint === "/ParentTeacherConferences/40") return { ParentTeacherConference: { Id: 40, Date: "2026-09-13" } };
+      throw new Error(`Nieoczekiwany endpoint: ${endpoint}`);
+    },
+  };
+  const service = new LibrusReadOnlyService({ session: fakeSession(client) });
+  const result = await service.getCalendar("11", { dateFrom: "2026-09-01", dateTo: "2026-09-30", limit: 10 });
+
+  assert.equal(result.student.class_id, 66559);
+  assert.equal(result.student.class_name, "3Europa");
+  assert.deepEqual(result.events.map((event) => event.source), [
+    "homework", "school_free_day", "substitution", "parent_teacher_conference",
+  ]);
+  assert.equal(calls.filter((endpoint) => String(endpoint).endsWith("/SchoolFreeDays/20")).length, 1);
+});
+
+test("parseCalendarRange ogranicza limit terminarza do 100", () => {
+  const service = new LibrusReadOnlyService({ session: fakeSession({}), maxResults: 500 });
+  assert.equal(service.parseCalendarRange({ date_from: "2026-09-01", date_to: "2026-09-30", limit: 100 }).limit, 100);
+  assert.throws(
+    () => service.parseCalendarRange({ date_from: "2026-09-01", date_to: "2026-09-30", limit: 101 }),
+    /od 1 do 100/,
   );
 });
 

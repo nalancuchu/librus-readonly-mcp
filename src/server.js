@@ -23,7 +23,9 @@ const tools = [
   tool("get_grades", "Oceny dziecka w podanym zakresie dat.", { ...studentProp, ...dateProps }, ["student_id", "date_from", "date_to"]),
   tool("get_attendance", "Frekwencja dziecka w podanym zakresie dat.", { ...studentProp, ...dateProps }, ["student_id", "date_from", "date_to"]),
   tool("get_timetable", "Plan lekcji dziecka; zakres maksymalnie 31 dni, z zastępstwami zwracanymi przez Librus.", { ...studentProp, date_from: dateProps.date_from, date_to: dateProps.date_to }, ["student_id", "date_from", "date_to"]),
-  tool("get_calendar", "Terminarz i dni wolne dziecka w podanym zakresie dat.", { ...studentProp, ...dateProps }, ["student_id", "date_from", "date_to"]),
+  tool("get_calendar", "Terminarz i dni wolne dziecka w podanym zakresie dat.", {
+    ...studentProp, ...dateProps, limit: { ...dateProps.limit, maximum: 100 },
+  }, ["student_id", "date_from", "date_to"]),
   tool("get_homework", "Zadania domowe i przypisane prace dziecka.", { ...studentProp, ...dateProps }, ["student_id", "date_from", "date_to"]),
   tool("get_announcements", "Ogłoszenia szkolne (oddzielne od wiadomości).", { ...studentProp, ...dateProps }, ["student_id", "date_from", "date_to"]),
   tool("list_messages", "Lista wiadomości dziecka, wyłącznie odczyt.", {
@@ -93,7 +95,7 @@ async function dispatch(service, name, args) {
       const range = dateRange(args.date_from, args.date_to, 31);
       return service.getTimetable(args.student_id, range);
     }
-    case "get_calendar": return service.getCalendar(args.student_id, service.parseRange(args));
+    case "get_calendar": return service.getCalendar(args.student_id, service.parseCalendarRange(args));
     case "get_homework": return service.getHomework(args.student_id, service.parseRange(args));
     case "get_announcements": return service.getAnnouncements(args.student_id, service.parseRange(args));
     case "list_messages": return service.listMessages(args.student_id, {

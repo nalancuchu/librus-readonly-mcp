@@ -100,30 +100,56 @@ export class LibrusReadOnlyService {
 
   async getCalendar(studentId, { dateFrom, dateTo, limit }) {
     const { child, client } = await this.clientFor(studentId);
-    const [calendarIndex, classFree, schoolFree] = await Promise.all([
-      client.getCalendars(), client.getClassFreeDays(), client.getSchoolFreeDays(),
+    const [calendarIndex, classPayload, ...collectionResults] = await Promise.all([
+      client.getCalendars(),
+      this.classForChild(child, client),
+      settleCollection("class_free_day", "ClassFreeDays", () => client.getClassFreeDays()),
+      settleCollection("school_free_day", "SchoolFreeDays", () => client.getSchoolFreeDays()),
+      settleCollection("teacher_free_day", "TeacherFreeDays", () => client.getTeacherFreeDays?.()),
+      settleCollection("parent_teacher_conference", "ParentTeacherConferences", () => client.listParentTeacherConferences?.()),
     ]);
-    const calendarRefs = firstArray(calendarIndex, ["Calendars"]);
-    const calendarPayloads = await Promise.all(calendarRefs.map((reference) => (
-      this.calendarForReference(client, reference)
-    )));
-    const calendarEvents = calendarPayloads.flatMap(calendarEventsFromPayload);
-    const events = [
-      ...calendarEvents,
-      ...firstArray(classFree, ["ClassFreeDays"]),
-      ...firstArray(schoolFree, ["SchoolFreeDays"]),
-    ];
+    const rootRefs = firstArray(calendarIndex, ["Calendars"]).map((reference) => ({ source: "calendar", reference }));
+    const errors = collectionResults.flatMap((result) => result.errors);
+    const firstLevel = await this.resolveCalendarReferences(client, uniqueCalendarReferences(rootRefs));
+    errors.push(...firstLevel.errors);
+    const nestedRefs = firstLevel.payloads.flatMap(({ payload }) => calendarReferencesFromPayload(payload));
+    const nestedKeys = new Set(nestedRefs.map(calendarReferenceKey));
+    const supplementalRefs = collectionResults.flatMap((result) => result.references)
+      .filter((entry) => !nestedKeys.has(calendarReferenceKey(entry)));
+    const leafPayloads = firstLevel.payloads.filter(({ payload }) => !hasCalendarReferences(payload));
+    const secondLevel = await this.resolveCalendarReferences(
+      client, uniqueCalendarReferences([...nestedRefs, ...supplementalRefs]),
+    );
+    errors.push(...secondLevel.errors);
+    const events = [...leafPayloads, ...secondLevel.payloads]
+      .flatMap(({ source, payload }) => calendarEventsFromPayload(payload).map((event) => ({ source, ...event })));
     const rows = filterDated(events, dateFrom, dateTo).slice(0, limit);
-    return { student: publicChild(child), date_from: dateFrom, date_to: dateTo, count: rows.length, events: rows };
+    return {
+      student: publicChild(child, classPayload), date_from: dateFrom, date_to: dateTo,
+      count: rows.length, events: rows, ...(errors.length > 0 ? { partial_errors: errors } : {}),
+    };
   }
 
-  async calendarForReference(client, reference) {
+  async resolveCalendarReferences(client, entries) {
+    const results = await Promise.allSettled(entries.map(async ({ source, reference }) => ({
+      source, reference, payload: await this.calendarForReference(client, reference, source),
+    })));
+    const payloads = [];
+    const errors = [];
+    results.forEach((result, index) => {
+      if (result.status === "fulfilled") payloads.push(result.value);
+      else errors.push(calendarReferenceError(entries[index]));
+    });
+    return { payloads, errors };
+  }
+
+  async calendarForReference(client, reference, source = "calendar") {
     const id = calendarReferenceId(reference);
-    if (typeof client.getCalendar === "function") return client.getCalendar(id);
+    if (source === "calendar" && typeof client.getCalendar === "function") return client.getCalendar(id);
     if (typeof client.getJson !== "function") {
       throw new Error("Klient Librusa nie obsługuje pobierania szczegółów kalendarza.");
     }
-    return client.getJson(`/Calendars/${encodeURIComponent(String(id))}`, v.looseObject({}));
+    return client.getJson(calendarReferenceEndpoint(client, reference, source, id), v.looseObject({}));
   }
 
   async getHomework(studentId, { dateFrom, dateTo, limit }) {
@@ -202,6 +228,55 @@ export class LibrusReadOnlyService {
     const { dateFrom, dateTo } = dateRange(args.date_from, args.date_to, maxDays);
     return { dateFrom, dateTo, limit: clampLimit(args.limit, this.maxResults) };
   }
+
+  parseCalendarRange(args) {
+    const { dateFrom, dateTo } = dateRange(args.date_from, args.date_to, 62);
+    return { dateFrom, dateTo, limit: clampLimit(args.limit, Math.min(this.maxResults, 100)) };
+  }
+}
+
+const CALENDAR_COLLECTIONS = {
+  HomeWorks: "homework", SchoolFreeDays: "school_free_day", ClassFreeDays: "class_free_day",
+  TeacherFreeDays: "teacher_free_day", Substitutions: "substitution",
+  ParentTeacherConferences: "parent_teacher_conference",
+};
+
+const SOURCE_PATHS = {
+  calendar: "/Calendars", homework: "/HomeWorks", school_free_day: "/Calendars/SchoolFreeDays",
+  class_free_day: "/Calendars/ClassFreeDays", teacher_free_day: "/Calendars/TeacherFreeDays",
+  substitution: "/Calendars/Substitutions", parent_teacher_conference: "/ParentTeacherConferences",
+};
+
+function settleCollection(source, key, load) {
+  return Promise.resolve().then(load).then(
+    (payload) => ({ references: firstArray(payload, [key]).map((reference) => ({ source, reference })), errors: [] }),
+    () => ({ references: [], errors: [{ source, error: "Nie udało się pobrać kolekcji z Librusa." }] }),
+  );
+}
+
+function calendarReferencesFromPayload(payload) {
+  const containers = [payload, payload?.Calendar].filter((value) => value && typeof value === "object");
+  return containers.flatMap((container) => Object.entries(CALENDAR_COLLECTIONS).flatMap(([key, source]) => (
+    Array.isArray(container[key]) ? container[key].map((reference) => ({ source, reference })) : []
+  )));
+}
+
+function hasCalendarReferences(payload) {
+  return calendarReferencesFromPayload(payload).length > 0;
+}
+
+function uniqueCalendarReferences(entries) {
+  const seen = new Set();
+  return entries.filter((entry) => {
+    const key = calendarReferenceKey(entry);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function calendarReferenceKey({ source, reference }) {
+  return `${source}:${reference?.Id ?? reference?.id ?? reference?.Url ?? "missing"}`;
 }
 
 function calendarReferenceId(reference) {
@@ -215,10 +290,32 @@ function calendarReferenceId(reference) {
   return id;
 }
 
+function calendarReferenceEndpoint(client, reference, source, id) {
+  if (typeof reference.Url === "string" && typeof client.apiBaseUrl === "string") {
+    try {
+      const url = new URL(reference.Url);
+      const apiUrl = new URL(client.apiBaseUrl);
+      if (url.origin === apiUrl.origin && /^\/\d+\.\d+\//.test(url.pathname)) return url.toString();
+    } catch { /* użyj bezpiecznie zbudowanej ścieżki */ }
+  }
+  const basePath = SOURCE_PATHS[source];
+  if (!basePath) throw new Error("Nieznany typ odnośnika terminarza.");
+  return `${basePath}/${encodeURIComponent(String(id))}`;
+}
+
+function calendarReferenceError({ source, reference }) {
+  let id = null;
+  try { id = calendarReferenceId(reference); } catch { /* identyfikator pozostaje pusty */ }
+  return { source, id, error: "Nie udało się pobrać szczegółów wpisu z Librusa." };
+}
+
 function calendarEventsFromPayload(payload) {
   if (Array.isArray(payload)) return payload;
   if (!payload || typeof payload !== "object") return [];
-  for (const key of ["Calendar", "Calendars", "Events", "Entries"]) {
+  for (const key of [
+    "Calendar", "Calendars", "Event", "Events", "Entry", "Entries", "HomeWork",
+    "SchoolFreeDay", "ClassFreeDay", "TeacherFreeDay", "Substitution", "ParentTeacherConference",
+  ]) {
     if (Array.isArray(payload[key])) return payload[key];
     if (payload[key] && typeof payload[key] === "object") return [payload[key]];
   }
