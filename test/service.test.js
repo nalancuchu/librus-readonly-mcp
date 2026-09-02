@@ -201,16 +201,24 @@ test("załącznik jest weryfikowany względem wiadomości i zapisywany prywatnie
   assert.equal(result.filename.includes(".."), false);
 });
 
-test("załącznik nowego modułu wiadomości używa endpointu z message_id i sesyjnych cookies", async () => {
+test("załącznik nowego modułu wiadomości wykonuje dwuetapowe pobieranie", async () => {
   const calls = [];
   const backend = {
     authenticated: true,
     wiadomosciBaseUrl: "https://wiadomosci.librus.pl",
     async fetchImpl(endpoint, options) {
       calls.push({ endpoint, options });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({
+          data: {
+            status: "ok",
+            downloadLink: "https://sandbox.librus.pl/index.php?action=CSTryToDownload&amp;singleUseKey=hidden",
+          },
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       return new Response(Buffer.from("pdf"), {
         status: 200,
-        headers: { "content-type": "application/pdf" },
+        headers: { "content-type": "application/pdf", "content-disposition": 'attachment; filename="api.pdf"' },
       });
     },
   };
@@ -225,10 +233,79 @@ test("załącznik nowego modułu wiadomości używa endpointu z message_id i ses
   const result = await service.downloadMessageAttachment("22", "39348", "840702");
 
   assert.equal(calls[0].endpoint, "https://wiadomosci.librus.pl/api/attachments/840702/messages/39348");
+  assert.equal(calls[1].endpoint, "https://sandbox.librus.pl/index.php?action=CSTryToDownload&singleUseKey=hidden");
   assert.equal(calls[0].options.method, "GET");
   assert.equal(result.filename, "22-39348-plan.pdf");
   assert.equal(result.content_type, "application/pdf");
   assert.equal(Buffer.from(result.data, "base64").toString(), "pdf");
+});
+
+test("nazwa z wiadomości jest zachowana, gdy odpowiedź końcowa nie ma content-disposition", async () => {
+  let requestNo = 0;
+  const client = {
+    messageBackend: {
+      authenticated: true,
+      wiadomosciBaseUrl: "https://wiadomosci.librus.pl",
+      async fetchImpl() {
+        requestNo += 1;
+        if (requestNo === 1) {
+          return new Response(JSON.stringify({ data: {
+            status: "ok", downloadLink: "https://sandbox.librus.pl/download?singleUseKey=hidden",
+          } }), { headers: { "content-type": "application/json; charset=utf-8" } });
+        }
+        return new Response(Buffer.from("%PDF-test"), { headers: { "content-type": "application/pdf" } });
+      },
+    },
+    async getMessage() { return { Message: { attachments: [{ id: "840702", filename: "plan.pdf" }] } }; },
+  };
+  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+  const result = await service.downloadMessageAttachment("22", "39348", "840702");
+
+  assert.equal(result.filename, "22-39348-plan.pdf");
+});
+
+test("JSON lub HTML jako odpowiedź końcowa nie są zapisywane jako plik", async () => {
+  for (const [contentType, body] of [
+    ["application/json", '{"error":"expired"}'],
+    ["text/html; charset=utf-8", "<!doctype html><title>Błąd</title>"],
+  ]) {
+    let requestNo = 0;
+    const client = {
+      messageBackend: {
+        authenticated: true,
+        wiadomosciBaseUrl: "https://wiadomosci.librus.pl",
+        async fetchImpl() {
+          requestNo += 1;
+          if (requestNo === 1) {
+            return new Response(JSON.stringify({ data: {
+              status: "ok", downloadLink: "https://sandbox.librus.pl/download?singleUseKey=hidden",
+            } }), { headers: { "content-type": "application/json" } });
+          }
+          return new Response(body, { headers: { "content-type": contentType } });
+        },
+      },
+      async getMessage() { return { Message: { attachments: [{ id: "840702", filename: "plan.pdf" }] } }; },
+    };
+    const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+    await assert.rejects(service.downloadMessageAttachment("22", "39348", "840702"), /nie zwrócił pliku/);
+  }
+});
+
+test("odnośnik pobierania poza HTTPS i domeną Librusa jest odrzucany", async () => {
+  const client = {
+    messageBackend: {
+      authenticated: true,
+      wiadomosciBaseUrl: "https://wiadomosci.librus.pl",
+      async fetchImpl() {
+        return new Response(JSON.stringify({ data: {
+          status: "ok", downloadLink: "https://example.com/?singleUseKey=secret",
+        } }), { headers: { "content-type": "application/json" } });
+      },
+    },
+    async getMessage() { return { Message: { attachments: [{ id: "840702" }] } }; },
+  };
+  const service = new LibrusReadOnlyService({ session: fakeSession(client), attachmentMode: "inline" });
+  await assert.rejects(service.downloadMessageAttachment("22", "39348", "840702"), /niedozwolony/);
 });
 
 test("błąd API załącznika nowego modułu jest propagowany bez treści odpowiedzi", async () => {

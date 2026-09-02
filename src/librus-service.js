@@ -196,11 +196,12 @@ export class LibrusReadOnlyService {
 
     const binary = await this.getMessageAttachment(client, safeMessageId, safeAttachmentId);
     const data = Buffer.isBuffer(binary.data) ? binary.data : Buffer.from(binary.data);
+    assertDownloadedAttachment(data, binary.contentType);
     if (data.length > this.maxAttachmentBytes) {
       throw new Error(`Załącznik przekracza limit ${this.maxAttachmentBytes} bajtów.`);
     }
-    const original = filenameFromDisposition(binary.contentDisposition)
-      ?? attachmentFilename(attachment)
+    const original = attachmentFilename(attachment)
+      ?? filenameFromDisposition(binary.contentDisposition)
       ?? `zalacznik-${safeAttachmentId}.bin`;
     const fileName = `${sanitizeFilename(String(child.id))}-${sanitizeFilename(safeMessageId)}-${sanitizeFilename(original)}`;
     const sha256 = createHash("sha256").update(data).digest("hex");
@@ -256,11 +257,28 @@ export class LibrusReadOnlyService {
         await response.arrayBuffer();
         throw new Error(`Wiadomosci API request failed (HTTP ${response.status}).`);
       }
-      return {
-        data: await response.arrayBuffer(),
-        contentDisposition: response.headers.get("content-disposition"),
-        contentType: response.headers.get("content-type"),
-      };
+      const contentType = response.headers.get("content-type");
+      if (!isJsonContentType(contentType)) return binaryResponse(response, contentType);
+
+      const downloadUrl = downloadUrlFromJson(await response.arrayBuffer());
+      const downloadResponse = await backend.fetchImpl(downloadUrl, {
+        method: "GET",
+        headers: {
+          accept: "application/octet-stream, */*",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/62.0",
+        },
+      });
+      if (downloadResponse.status === 401 && retryAfterUnauthorized && typeof backend.authenticate === "function") {
+        await downloadResponse.arrayBuffer();
+        backend.authenticated = false;
+        await backend.authenticate();
+        return request(false);
+      }
+      if (!downloadResponse.ok) {
+        await downloadResponse.arrayBuffer();
+        throw new Error(`Pobieranie pliku z Librusa nie powiodło się (HTTP ${downloadResponse.status}).`);
+      }
+      return binaryResponse(downloadResponse, downloadResponse.headers.get("content-type"));
     };
     return request(true);
   }
@@ -281,6 +299,52 @@ function attachmentFilename(attachment) {
     if (typeof attachment[key] === "string" && attachment[key].trim() !== "") return attachment[key].trim();
   }
   return null;
+}
+
+function isJsonContentType(contentType) {
+  return typeof contentType === "string" && /(^|\s|;)application\/(?:[^;]+\+)?json(?:\s|;|$)/i.test(contentType);
+}
+
+function downloadUrlFromJson(arrayBuffer) {
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(arrayBuffer).toString("utf8"));
+  } catch {
+    throw new Error("Librus zwrócił niepoprawną odpowiedź JSON dla załącznika.");
+  }
+  const rawUrl = payload?.data?.downloadLink;
+  if (payload?.data?.status !== "ok" || typeof rawUrl !== "string") {
+    throw new Error("Librus nie zwrócił odnośnika do pobrania załącznika.");
+  }
+  let url;
+  try {
+    url = new URL(rawUrl.replaceAll("&amp;", "&"));
+  } catch {
+    throw new Error("Librus zwrócił niepoprawny odnośnik do pobrania załącznika.");
+  }
+  if (url.protocol !== "https:" || (url.hostname !== "librus.pl" && !url.hostname.endsWith(".librus.pl"))) {
+    throw new Error("Librus zwrócił niedozwolony odnośnik do pobrania załącznika.");
+  }
+  return url.toString();
+}
+
+async function binaryResponse(response, contentType) {
+  return {
+    data: await response.arrayBuffer(),
+    contentDisposition: response.headers.get("content-disposition"),
+    contentType,
+  };
+}
+
+function assertDownloadedAttachment(data, contentType) {
+  if (data.length === 0) throw new Error("Librus zwrócił pusty załącznik.");
+  const normalizedType = String(contentType ?? "").toLowerCase();
+  const prefix = data.subarray(0, 256).toString("utf8").trimStart().toLowerCase();
+  if (isJsonContentType(normalizedType) || normalizedType.includes("text/html")
+    || prefix.startsWith("{") || prefix.startsWith("[")
+    || prefix.startsWith("<!doctype html") || prefix.startsWith("<html")) {
+    throw new Error("Librus nie zwrócił pliku załącznika.");
+  }
 }
 
 const CALENDAR_COLLECTIONS = {
