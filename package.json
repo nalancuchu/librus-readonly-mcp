@@ -1,0 +1,22 @@
+{
+  "name": "librus-readonly-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Read-only MCP connector for Librus with multi-child Portal support",
+  "type": "module",
+  "bin": {
+    "librus-readonly-mcp": "./src/server.js"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test",
+    "check": "node --check src/server.js && node --check src/librus-service.js && node --check src/utils.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "librus-sdk": "0.7.1"
+  }
+}
