@@ -24,6 +24,10 @@ export class LibrusReadOnlyService {
       "LIBRUS_MAX_ATTACHMENT_BYTES", 10 * 1024 * 1024, 1024, 25 * 1024 * 1024,
     );
     this.attachmentDir = path.resolve(options.attachmentDir ?? process.env.LIBRUS_ATTACHMENT_DIR ?? "attachments");
+    this.attachmentMode = options.attachmentMode ?? process.env.LIBRUS_ATTACHMENT_MODE ?? "file";
+    if (!["file", "inline"].includes(this.attachmentMode)) {
+      throw new Error('LIBRUS_ATTACHMENT_MODE musi mieć wartość "file" albo "inline".');
+    }
     this.session = options.session ?? LibrusSession.fromEnv(process.env);
   }
 
@@ -136,6 +140,16 @@ export class LibrusReadOnlyService {
     }
     const original = filenameFromDisposition(binary.contentDisposition) ?? `zalacznik-${safeAttachmentId}.bin`;
     const fileName = `${sanitizeFilename(String(child.id))}-${sanitizeFilename(safeMessageId)}-${sanitizeFilename(original)}`;
+    const sha256 = createHash("sha256").update(data).digest("hex");
+    const metadata = {
+      student: publicChild(child), message_id: safeMessageId, attachment_id: safeAttachmentId,
+      filename: fileName, size_bytes: data.length,
+      content_type: binary.contentType ?? "application/octet-stream", sha256,
+    };
+    if (this.attachmentMode === "inline") {
+      return { ...metadata, encoding: "base64", data: data.toString("base64") };
+    }
+
     await mkdir(this.attachmentDir, { recursive: true, mode: 0o700 });
     let storedFileName = fileName;
     const outputPath = path.join(this.attachmentDir, storedFileName);
@@ -145,11 +159,8 @@ export class LibrusReadOnlyService {
       storedFileName = `${digest}-${fileName}`;
       await writeFile(path.join(this.attachmentDir, storedFileName), data, { mode: 0o600, flag: "wx" });
     });
-    const sha256 = createHash("sha256").update(data).digest("hex");
     return {
-      student: publicChild(child), message_id: safeMessageId, attachment_id: safeAttachmentId,
-      filename: storedFileName, directory: this.attachmentDir, size_bytes: data.length,
-      content_type: binary.contentType ?? "application/octet-stream", sha256,
+      ...metadata, filename: storedFileName, directory: this.attachmentDir,
     };
   }
 

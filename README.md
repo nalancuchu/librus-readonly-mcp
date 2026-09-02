@@ -1,6 +1,7 @@
 # Librus Read-only MCP
 
-Lokalny connector MCP do odczytu danych z Konta LIBRUS. Obsługuje **wiele dzieci
+Connector MCP do odczytu danych z Konta LIBRUS, działający lokalnie przez
+`stdio` albo zdalnie przez Streamable HTTP. Obsługuje **wiele dzieci
 powiązanych z jednym kontem rodzica** i nigdy nie udostępnia narzędzi do
 wysyłania, usuwania ani modyfikowania danych.
 
@@ -94,6 +95,60 @@ Użyj bezwzględnej ścieżki do `src/server.js`:
 Najpierw wywołaj `list_students`, a potem przekazuj zwrócone `id` lub `login`
 jako `student_id`.
 
+## Wersja zdalna
+
+Zdalny serwer korzysta ze standardowego transportu Streamable HTTP na ścieżce
+`/mcp`. Endpoint `/health` służy wyłącznie do kontroli dostępności i nie łączy
+się z Librusem.
+
+Wymagane sekrety środowiskowe:
+
+```text
+LIBRUS_PORTAL_EMAIL=rodzic@example.com
+LIBRUS_PORTAL_PASSWORD=haslo-do-konta-librus
+MCP_ACCESS_TOKEN=co-najmniej-32-znakowy-losowy-sekret
+```
+
+Uruchomienie bez Dockera:
+
+```bash
+npm ci
+npm run start:http
+```
+
+Uruchomienie kontenera:
+
+```bash
+docker build -t librus-readonly-mcp .
+docker run --rm -p 3000:3000 \
+  -e LIBRUS_PORTAL_EMAIL \
+  -e LIBRUS_PORTAL_PASSWORD \
+  -e MCP_ACCESS_TOKEN \
+  librus-readonly-mcp
+```
+
+Adres MCP po wdrożeniu to `https://TWOJA-DOMENA/mcp`. W kliencie należy
+przekazywać `MCP_ACCESS_TOKEN` jako nagłówek:
+
+```text
+Authorization: Bearer <MCP_ACCESS_TOKEN>
+```
+
+Serwer odmawia uruchomienia, jeśli token ma mniej niż 32 znaki. Tryb
+`ALLOW_INSECURE_HTTP=true` służy wyłącznie do lokalnych testów i nie może być
+używany w publicznym wdrożeniu.
+
+Wersja zdalna nie zapisuje załączników na dysku serwera. Zwraca je zakodowane
+Base64 wraz z nazwą, typem MIME, rozmiarem i SHA-256. Domyślny limit wynosi
+10 MiB i można go obniżyć przez `LIBRUS_MAX_ATTACHMENT_BYTES`.
+
+### Ważne ograniczenie uwierzytelniania
+
+Bearer token chroni prywatny, jednoosobowy serwer i działa z klientami MCP,
+które pozwalają skonfigurować własny nagłówek. Jeżeli konkretny host wymaga
+pełnego OAuth 2.1 zamiast statycznego nagłówka, postaw przed serwerem bramę
+OAuth/reverse proxy. Nie publikuj endpointu `/mcp` bez uwierzytelniania.
+
 ## Załączniki
 
 `download_message_attachment` wymaga jednocześnie `message_id` i
@@ -115,6 +170,9 @@ identyfikator załącznika faktycznie w niej występuje. Pliki:
 - domyślny limit wyników: 100;
 - logi trafiają wyłącznie na stderr i są dodatkowo redagowane;
 - wersje zależności są przypięte, a `package-lock.json` powstaje przy instalacji.
+- zdalny endpoint wymaga stałoczasowo porównywanego Bearer tokenu i ma limit
+  żądań;
+- obraz Dockera działa jako nieuprzywilejowany użytkownik.
 
 To nadal nieoficjalna integracja. Librus może zmienić endpointy lub regulamin.
 Nie konfiguruj agresywnego odpytywania cyklicznego; używaj jej do prywatnego,

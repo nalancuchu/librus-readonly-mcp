@@ -9,14 +9,17 @@
   },
   "scripts": {
     "start": "node src/server.js",
+    "start:http": "node src/http-server.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check src/librus-service.js && node --check src/utils.js"
+    "check": "node --check src/server.js && node --check src/http-server.js && node --check src/librus-service.js && node --check src/utils.js"
   },
   "engines": {
     "node": ">=22"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
+    "express": "5.2.1",
+    "express-rate-limit": "8.7.0",
     "librus-sdk": "0.7.1"
   }
 }
